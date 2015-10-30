@@ -5,7 +5,7 @@
                      syntax/stx
                      syntax/boundmap)
          "generic-methods.rkt"
-         (only-in racket/function arity-includes?))
+         (only-in racket/private/arity arity-includes?))
 
 (provide define-primitive-generics
          define-primitive-generics/derived
@@ -112,9 +112,11 @@
 
        #'(begin
            (define-syntax generic-name
-             (make-generic-info (quote-syntax property-name)
+             (make-generic-info (quote-syntax generic-name)
+                                (quote-syntax property-name)
                                 (quote-syntax prop:pred)
                                 (quote-syntax accessor-name)
+                                (list (quote-syntax method-name) ...)
                                 (list (quote-syntax method-name) ...)))
            (define (prop:guard x info)
              (unless (and (vector? x) (= (vector-length x) 'size))

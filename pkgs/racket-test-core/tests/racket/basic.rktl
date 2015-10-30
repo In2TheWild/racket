@@ -1121,6 +1121,8 @@
 (test "x&cy&z" regexp-replace* #rx"a(.)" "xabcyawz" "\\&")
 (test "x\\cy\\z" regexp-replace* #rx"a(.)" "xabcyawz" "\\\\")
 
+(test "ap0p0le" regexp-replace* #rx"p" "apple" "\\0\\$0")
+
 ;; Test sub-matches with procedure replace (second example by synx)
 (test "myCERVEZA myMI Mi"
       regexp-replace* "([Mm])i ([a-zA-Z]*)" "mi cerveza Mi Mi Mi"
@@ -2548,8 +2550,8 @@
 (arity-test hash-set 3 3)
 (arity-test hash-remove! 2 2)
 (arity-test hash-remove 2 2)
-(arity-test hash-map 2 2)
-(arity-test hash-for-each 2 2)
+(arity-test hash-map 2 3)
+(arity-test hash-for-each 2 3)
 (arity-test hash? 1 1)
 (arity-test hash-eq? 1 1)
 (arity-test hash-weak? 1 1)

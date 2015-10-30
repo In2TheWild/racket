@@ -1241,9 +1241,8 @@
 (let ([c% (class object%
             (define/public (m . args) this)
             (super-new))])
-  (syntax-test #'(send+ (new c%) (m 5) (m 10)))
-  (syntax-test #'(send+ (new c%) (m . (1 2 3))))
-  (syntax-test #'(send+ (new c%) (m 5) (m . (1 2 3))))
+  (syntax-test #'(send+ (new c%) m 5))
+  (syntax-test #'(send+ (new c%) . 5))
 
   (test #t object? (send+ (new c%) (m 5) (m 15)))
   (test #t object? (send+ (new c%) (m 5) (m . (1 2 3 4)))))
@@ -2099,6 +2098,60 @@
                               (let-values ([(m) (chaperone-procedure (λ () 0) values)])
                                 m))))
                      m))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that `set!` works right in forced subform expansion:
+
+(let ()
+  (define (time-print-mixin t%)
+    (define start-time #f)
+    (class t%
+      (super-new)
+      (define/override (m)
+        (set! start-time 1)
+        (super m))))
+  (void time-print-mixin))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Test the class-seal and class-unseal operations
+
+(define (seal cls key init field method)
+  (class-seal cls key init field method
+              (λ (cls) (error "cannot instantiate sealed class"))
+              (λ (cls names) (error "cannot subclass with sealed member"))))
+
+(define (unseal cls key)
+  (class-unseal cls key (λ (cls) (error "no matching seal found"))))
+
+(err/rt-test (new (seal object% 'key null null null)) exn:fail?)
+(err/rt-test (new (seal (seal object% 'key null null null)
+                        'key2 null null null))
+             exn:fail?)
+(err/rt-test (unseal object% 'g123) exn:fail?)
+(err/rt-test (unseal (seal object% (gensym) null null null) 'g123)
+             exn:fail?)
+(err/rt-test (new (unseal (seal (seal object% 'key null null null)
+                                'key2 null null null)
+                          'key))
+             exn:fail?)
+(err/rt-test (let ([c% (seal object% (gensym) null null null)])
+               (new (class c% (super-new))))
+             exn:fail?)
+(test #t class? (let ([c% (seal object% (gensym) null '(x) null)])
+                  (class c% (super-new) (field [x 0]))))
+(test #t class? (let ([c% (seal (seal object% (gensym) null '(x) null)
+                                (gensym) null '(x y) null)])
+                  (class c% (super-new) (field [x 0]))))
+(err/rt-test (let ([c% (seal object% (gensym) null '(x) null)])
+               (new (class c% (super-new) (field [x 0]))))
+             exn:fail?)
+(err/rt-test (let ([c% (seal (seal object% (gensym) null '(x) null)
+                             (gensym) null '(y) null)])
+               (class c% (super-new) (field [z 0])))
+             exn:fail?)
+(err/rt-test (let ([c% (seal object% (gensym) null null null)])
+               (class c% (super-new) (field [x 0])))
+             exn:fail?)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

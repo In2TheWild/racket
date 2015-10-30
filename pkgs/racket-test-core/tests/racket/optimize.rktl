@@ -34,7 +34,7 @@
 				(unless (memq name '(eq? eqv? equal? 
                                                          not null? pair? list?
 							 real? number? boolean?
-							 procedure? symbol?
+							 procedure? symbol? keyword?
 							 string? bytes?
 							 vector? box?
 							 eof-object?
@@ -205,6 +205,8 @@
     (un #t 'procedure? (lambda (x) 10))
     (un #t 'symbol? 'ok)
     (un #f 'symbol? #f)
+    (un #t 'keyword? '#:ok)
+    (un #f 'keyword? #f)
     (un #t 'vector? (vector 1 2 3))
     (un #f 'vector? #f)
     (un #t 'box? (box 10))
@@ -883,7 +885,6 @@
 	  [t2 (get-output-bytes s2)])
       (or (bytes=? t1 t2)
 	  (begin
-            #;
 	    (printf "~s\n~s\n" 
                      (zo-parse (open-input-bytes t1))
                      (zo-parse (open-input-bytes t2)))
@@ -894,7 +895,11 @@
   (case-lambda
    [(expr1 expr2) (test-comp expr1 expr2 #t)]
    [(expr1 expr2 same?)
-    (test same? `(compile ,same? ,expr2) (comp=? (compile expr1) (compile expr2)))]))
+    (define (->stx s)
+      ;; Give `s` a minimal location, so that other macro locations
+      ;; don't bleed through:
+      (datum->syntax #f s (vector 'here #f #f #f #f)))
+    (test same? `(compile ,same? ,expr2) (comp=? (compile (->stx expr1)) (compile (->stx expr2))))]))
 
 (let ([x (compile '(lambda (x) x))])
   (test #t 'fixpt (eq? x (compile x))))
@@ -1261,6 +1266,27 @@
 (test-comp '(lambda (f l) (f l) #t)
            '(lambda (f l) (f l) (procedure? f)))
 
+(test-comp '(lambda (z) (let ([o #f]) (car z)) #t)
+           '(lambda (z) (let ([o #f]) (car z)) (pair? z)))
+(test-comp '(lambda (z) (let ([o (random)]) (car z)) #t)
+           '(lambda (z) (let ([o (random)]) (car z)) (pair? z)))
+(test-comp '(lambda (z) (let ([o z]) (list (car o) o o)) #t)
+           '(lambda (z) (let ([o z]) (list (car o) o o)) (pair? z)))
+(test-comp '(lambda (z) (let ([o z] [x (random)]) (list (car o) x x)) #t)
+           '(lambda (z) (let ([o z] [x (random)]) (list (car o) x x)) (pair? z)))
+(test-comp '(lambda (z) (let ([f (lambda () (car z))]) (f) #t))
+           '(lambda (z) (let ([f (lambda () (car z))]) (f) (pair? z))))
+(test-comp '(lambda (z) (let ([f (lambda () (car z))]) (f)) #t)
+           '(lambda (z) (let ([f (lambda () (car z))]) (f)) (pair? z)))
+(test-comp '(lambda (z) (let ([f (lambda (i) (car z))]) (f 0) #t))
+           '(lambda (z) (let ([f (lambda (i) (car z))]) (f 0) (pair? z))))
+(test-comp '(lambda (z) (let ([f (lambda (i) (car z))]) (f 0)) #t)
+           '(lambda (z) (let ([f (lambda (i) (car z))]) (f 0)) (pair? z)))
+(test-comp '(lambda (z) (let ([f (lambda (i) (car i))]) (f z) #t))
+           '(lambda (z) (let ([f (lambda (i) (car i))]) (f z) (pair? z))))
+(test-comp '(lambda (z) (let ([f (lambda (i) (car i))]) (f z)) #t)
+           '(lambda (z) (let ([f (lambda (i) (car i))]) (f z)) (pair? z)))
+
 ; Test the map primitive instead of the redefined version in private/map.rkt 
 (test-comp '(module ? '#%kernel
               (display #t)
@@ -1268,6 +1294,38 @@
            '(module ? '#%kernel
               (display (primitive? map))
               (display (lambda (f l) (map f l) (procedure? f)))))
+
+; Test the map version in private/map.rkt
+(test-comp '(module ? racket/base
+              #;(display #f)
+              (display (lambda (f l) (map f l) #t)))
+           '(module ? racket/base
+              #;(display (primitive? map))
+              (display (lambda (f l) (map f l) (procedure? f)))))
+
+(test-comp '(lambda (w z) (vector? (list->vector w)))
+           '(lambda (w z) (list->vector w) #t))
+(test-comp '(lambda (w z) (vector? (struct->vector w)))
+           '(lambda (w z) (struct->vector w) #t))
+(test-comp '(lambda (w z) (vector? (struct->vector w z)))
+           '(lambda (w z) (struct->vector w z) #t))
+
+(test-comp '(lambda (w z) (vector? (make-vector (w) (z))))
+           '(lambda (w z) (make-vector (w) (z)) #t))
+(test-comp '(lambda (w z) (vector? (make-vector (w))))
+           '(lambda (w z) (make-vector (w)) #t))
+(test-comp '(lambda (w z) (vector? (make-vector 5 (z))))
+           '(lambda (w z) (values (z)) #t))
+#;(test-comp '(lambda (w z) (vector? (make-vector 5 w)))
+           '(lambda (w z) #t))
+(test-comp '(lambda (w z) (vector? (make-vector 5)))
+           '(lambda (w z) #t))
+(test-comp '(lambda (w z) (vector? (make-vector -1)))
+           '(lambda (w z) #t)
+           #f)
+(test-comp '(lambda (w z) (vector? (make-vector #f)))
+           '(lambda (w z) #t)
+           #f)
 
 (test-comp '(lambda (w z)
               (let ([x (list* w z)]
@@ -1345,16 +1403,54 @@
                 (list l l))))
 
 (test-comp '(lambda (w z)
-              (list (if (pair? w)
-                        (car z)
-                        (car w))
+              (list (if (pair? w) (car w) (car z))
                     (cdr w)))
            '(lambda (w z)
-              (list (if (pair? w)
-                        (car z)
-                        (car w))
+              (list (if (pair? w) (car w) (car z))
                     (unsafe-cdr w)))
            #f)
+
+(test-comp '(lambda (w z)
+              (list (if z (car z) (car w))
+                    (cdr w)))
+           '(lambda (w z)
+              (list (if z (car z) (car w))
+                    (unsafe-cdr w)))
+           #f)
+
+(test-comp '(lambda (w z)
+              (list (if (pair? w) (car z) (car w))
+                    (cdr w)))
+           '(lambda (w z)
+              (list (if (pair? w) (car z) (car w))
+                    (unsafe-cdr w))))
+
+(test-comp '(lambda (w z)
+              (list (if z (car w) (cdr w))
+                    (cdr w)))
+           '(lambda (w z)
+              (list (if z (car w) (cdr w))
+                    (unsafe-cdr w))))
+
+(test-comp '(lambda (w z x)
+              (list (car x) (if z (car w) (cdr w)) (car x)))
+           '(lambda (w z x)
+              (list (car x) (if z (car w) (cdr w)) (unsafe-car x))))
+
+(test-comp '(lambda (w z x)
+              (list (car x) (if z (car w) 2) (car x)))
+           '(lambda (w z x)
+              (list (car x) (if z (car w) 2) (unsafe-car x))))
+
+(test-comp '(lambda (w z x)
+              (list (car x) (if z 1 (cdr w)) (car x)))
+           '(lambda (w z x)
+              (list (car x) (if z 1 (cdr w)) (unsafe-car x))))
+
+(test-comp '(lambda (w z x)
+              (list (car x) (if z 1 2) (car x)))
+           '(lambda (w z x)
+              (list (car x) (if z 1 2) (unsafe-car x))))
 
 (test-comp '(lambda (w)
               (list
@@ -1393,6 +1489,11 @@
            '(lambda ()
               (let ([y (random)])
                 (begin0 y (set! y 5)))))
+
+(test-comp '(lambda (x y) (car x) (unbox y) #f)
+           '(lambda (x y) (car x) (unbox y) (eq? x y)))
+(test-comp '(lambda (x) (car x) #f)
+           '(lambda (x) (car x) (eq? x (box 0))))
 
 (test-comp '(lambda (w) (car w) (mcar w))
            '(lambda (w) (car w) (mcar w) (random)))
@@ -1438,14 +1539,14 @@
               (car (cons (list 7) (values (f)))))
            #f)
 ;don't exchange if it may be not safe for space
-(test-comp '(lambda (f)
+(test-comp '(lambda (f n)
               (let ([big (cons (f) (make-vector 10))])
                 (display big) 
-                (begin (make-vector 20) (car big))))
-           '(lambda (f)
+                (begin (make-vector n) (car big))))
+           '(lambda (f n)
               (let ([big (cons (f) (make-vector 10))])
                 (display big) 
-                (car (cons (car big) (make-vector 20)))))
+                (car (cons (car big) (make-vector n)))))
            #f)
 
 (test-comp '(lambda (w)
@@ -1471,6 +1572,17 @@
 
 (test-comp '(lambda (w) (if (void (list w)) 1 2))
            '(lambda (w) 1))
+
+; Diferent number of argumets use different codepaths
+(test-comp '(lambda (f x) (void))
+           '(lambda (f x) (void (list))))
+(test-comp '(lambda (f x) (begin (values (f x)) (void)))
+           '(lambda (f x) (void (list (f x)))))
+(test-comp '(lambda (f x) (begin (values (f x)) (values (f x)) (void)))
+           '(lambda (f x) (void (list (f x) (f x)))))
+(test-comp '(lambda (f x) (begin (values (f x)) (values (f x)) (values (f x)) (void)))
+           '(lambda (f x) (void (list (f x) (f x) (f x)))))
+
 
 (test null
       call-with-values (lambda () (with-continuation-mark 'a 'b (values))) list)
@@ -1560,7 +1672,9 @@
 	   '(letrec ([x (cons 1 1)][y x]) (cons x x)))
 
 (test-comp '(let ([f (lambda (x) x)]) f)
-	   (syntax-property (datum->syntax #f '(lambda (x) x)) 'inferred-name 'f))
+	   (syntax-property (datum->syntax #f '(lambda (x) x) (vector 'here #f #f #f #f))
+                            'inferred-name
+                            'f))
 
 (test-comp '(letrec ([f (lambda (x) x)])
 	      (f 10)
@@ -1598,6 +1712,13 @@
 
 (test-comp '(lambda (x) (not (if x #f 2)))
            '(lambda (x) (not (if x #f #t))))
+(test-comp '(lambda (x) (let ([z 2]) (not (if x #f z))))
+           '(lambda (x) (let ([z 2]) (not (if x #f #t)))))
+(test-comp '(lambda (z) (when (pair? z) #f))
+           '(lambda (z) (when (pair? z) (not z))))
+(test-comp '(lambda (z) (when (pair? z) (set! z #f) #f))
+           '(lambda (z) (when (pair? z) (set! z #f) (not z)))
+           #f)
 
 (test-comp '(lambda (x) (if x x #f))
            '(lambda (x) x))
@@ -1642,6 +1763,27 @@
 (test-comp '(lambda (x) (let ([r (something)])
                           (if r #t (something-else))))
            '(lambda (x) (if (something) #t (something-else))))
+
+(let ([test-pred-implies-val
+       (lambda (pred? val)
+         (test-comp `(lambda (x) (if (,pred? x) ,val 0))
+                    `(lambda (x) (if (,pred? x) x 0))))])
+  (test-pred-implies-val 'null? 'null)
+  (test-pred-implies-val 'void? '(void))
+  (test-pred-implies-val 'eof-object? 'eof)
+  (test-pred-implies-val 'not '#f))
+(test-comp '(lambda (x) (if (null? x) 1 0) null)
+           '(lambda (x) (if (null? x) 1 0) x)
+           #f)
+(test-comp '(lambda (x) (if (eq? x '(0)) #t 0))
+           '(lambda (x) (if (eq? x '(0)) (pair? x) 0)))
+(test-comp '(lambda (x) (if (eq? x (list 0)) #t 0))
+           '(lambda (x) (if (eq? x (list 0)) (pair? x) 0)))
+(test-comp '(lambda (x y) (car y) (if (eq? x y) #t 0))
+           '(lambda (x y) (car y) (if (eq? x y) (pair? x) 0)))
+(test-comp '(lambda (x) (if x 1 (list #f)))
+           '(lambda (x) (if x 1 (list x))))
+
 
 (test-comp '(lambda (x) (let ([r (something)])
                           (r)))
@@ -1862,19 +2004,52 @@
     (test '((1) (2)) f (lambda (n) (set! v n) n))
     (test 2 values v)))
 
+;; Make sure `values` splitting doesn't use wrong clock values
+;; leading to reordering:
+(test-comp '(lambda (p)
+             (define-values (x y) (values (car p) (cdr p)))
+             (values y x))
+           '(lambda (p)
+             (values (unsafe-cdr p) (car p)))
+           #f)
+(test-comp '(lambda (p)
+             (define-values (x y) (values (car p) (cdr p)))
+             (values y x))
+           '(lambda (p)
+             (let ([x (car p)])
+               (values (unsafe-cdr p) x))))
+
 (test-comp '(lambda (z)
-             ;; Moving `(list z)` before `(list (z 2))`
-             ;; would reorder, which is not allowed, so check
-             ;; that the optimizer can keep track:
+             ;; Moving `(list z)` after `(list (z 2))` is not allowed
+             ;; in case `(z 2)` captures a continuation:
              (let-values ([(a b) (values (list z) (list (z 2)))])
-               (list a b)))
+               (list b a)))
            '(lambda (z)
-              (list (list z) (list (z 2)))))
+              (list (list (z 2)) (list z)))
+           #f)
+(test-comp '(lambda (z)
+              (let-values ([(a b) (values (list (z 2)) (list z))])
+                (list a a b)))
+           '(lambda (z)
+             (let ([a (list (z 2))])
+               (list a a (list z)))))
+
+;; It would be nice if the optimizer could do these two, but because it
+;; involves temporarily reordering `(list z)` and `(list (z 2))`
+;; (which is not allowed in case `(z 2)` captures a continuation),
+;; the optimizer currently cannot manage it:
+#;
 (test-comp '(lambda (z)
               (let-values ([(a b) (values (list (z 2)) (list z))])
                 (list a b)))
            '(lambda (z)
              (list (list (z 2)) (list z))))
+#;
+(test-comp '(lambda (z)
+              (let-values ([(a b) (values (list z) (list (z 2)))])
+                (list a b)))
+           '(lambda (z)
+             (list (list z) (list (z 2)))))
 
 (test-comp '(module m racket/base
              ;; Reference to a ready module-level variable shouldn't
@@ -2455,6 +2630,7 @@
   (test-pred 'null?)
   (test-pred 'void?)
   (test-pred 'symbol?)
+  (test-pred 'keyword?)
   (test-pred 'string?)
   (test-pred 'bytes?)
   (test-pred 'path?)
@@ -3397,6 +3573,16 @@
            #f)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that the unused continuations are removed
+
+(test-comp '(call-with-current-continuation (lambda (ignored) 5))
+           5)
+(test-comp '(call-with-composable-continuation (lambda (ignored) 5))
+           5)
+(test-comp '(call-with-escape-continuation (lambda (ignored) 5))
+           5)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check splitting of definitions
 (test-comp `(module m racket/base
               (define-values (x y) (values 1 2)))
@@ -4091,8 +4277,8 @@
    (write-bytes
     (zo-marshal
      (match m
-       [(compilation-top max-let-depth prefix code)
-        (compilation-top max-let-depth prefix 
+       [(compilation-top max-let-depth binding-namess prefix code)
+        (compilation-top max-let-depth binding-namess prefix 
                          (let ([body (mod-body code)])
                            (struct-copy mod code [body
                                                   (match body 
@@ -4116,6 +4302,35 @@
                               [read-accept-compiled #t])
                  (eval (read (open-input-bytes (get-output-bytes o2)))))
                exn:fail:read?))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; make sure sfs pass doesn't add a nested begin0
+;; to clear the variables used in the first expression
+
+(let ()
+  (define c
+    '(module c racket/base
+       (define z (let ([result (random)])
+                   (begin0 (lambda () result) (newline))))))
+
+  (define o (open-output-bytes))
+
+  (parameterize ([current-namespace (make-base-namespace)])
+    (write (compile c) o))
+
+  (define m (zo-parse (open-input-bytes (get-output-bytes o))))
+
+  ; extract the content of the begin0 expression
+  (define (analyze-beg0 m)
+    (define def-z (car (mod-body (compilation-top-code m))))
+    (define body-z (let-one-body (def-values-rhs def-z)))
+    (define expr-z (car (beg0-seq body-z)))
+    (cond
+      [(lam? expr-z) 'ok]
+      [(beg0? expr-z) 'not-reduced-beg0-in-sfs]
+      [else 'unexpected]))
+
+  (test 'ok (lambda () (analyze-beg0 m))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; make sure `begin0' propertly propagates "multiple results" flags
@@ -4292,6 +4507,14 @@
   (define-inline (odd? x)  (if (zero? x) #f (even? (sub1 x))))
   (test/output (odd? 2)
                #f "")
+
+  ;; multiple keyword arguments that have to be sorted:
+  (define-inline (sub #:a a #:b b)
+    (- a b))
+  (test/output (sub #:a 2 #:b 1)
+               1 "")
+  (test/output (sub #:b 1 #:a 2)
+               1 "")
   )
 
 
@@ -4579,7 +4802,7 @@
           (read (open-input-bytes (get-output-bytes o))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Check that an unsufe opertion's argument is
+;; Check that an unsafe opertion's argument is
 ;; not "optimized" away if it's a use of
 ;; a variable before definition:
 
@@ -4746,5 +4969,47 @@
   (test '(#t #t) map variable-reference? v))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check correct use of shift in reduction of non-#f variables in Boolean contexts 
+
+; Due to a bad coordinates use, the optimizer confused f-two with unused-pair, 
+; and in a Boolean context reduced f-two to #t. See 16ce8fd90d.
+; The right number of let's is difficult to calculate, so we generate
+; many variations. Before the fix, this test produced an error when n was 16.
+
+(for ([n (in-range 30)])
+  (define many-lets (for/fold ([many-lets '(void)]) ([i (in-range n)])
+                      `(let ([f 0]) ,many-lets)))
+  (test-comp `(let ()
+                (define ignored (lambda () ,many-lets))
+                (let ([f-two (not (zero? (random 1)))]
+                      [unused-pair (cons 0 0)])
+                  (if (let ([f-one #f])
+                        (if f-one f-one f-two))
+                    (displayln (list 'yes f-two ,n))
+                    111111)))
+             `(let ()
+                (define ignored (lambda () ,many-lets))
+                (let ([f-two (not (zero? (random 1)))]
+                      [unused-pair (cons 0 0)])
+                  (if (let ([f-one #f])
+                        (if f-one f-one f-two))
+                    (displayln (list 'yes f-two ,n))
+                    222222)))
+             #f))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure the compiler doesn't try to inline forever,
+;; due to bad single-use tracking:
+
+(module check-inline-single-use-tracking racket/base
+  (define dup (lambda (f) (f f)))
+  (lambda ()
+    ;; Initially, `rep` is used only once, but inlining
+    ;; followed by other optimizations changes that:
+    (let ([rep (lambda (f) (f f))])
+      (dup rep))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 
 (report-errs)

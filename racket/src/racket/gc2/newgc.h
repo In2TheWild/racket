@@ -13,32 +13,43 @@ typedef struct mpage {
   struct mpage *next;
   struct mpage *prev;
   void *addr;
-  uintptr_t previous_size; /* for med page, place to search for available block; for jit nursery, allocated size */
-  uintptr_t size; /* big page size, med page element size, or nursery starting point */
-/*
-  unsigned char generation    :1;
-  unsigned char back_pointers :1;
-  unsigned char size_cless    :2;
-  unsigned char page_type     :3; 
-  unsigned char marked_on     :1;
-  unsigned char has_new       :1;
-  unsigned char mprotected    :1;
-  unsigned char added         :1;
-*/
-  unsigned char generation    ;
-  unsigned char back_pointers ;
-  unsigned char size_class    ; /* 0 => small; 1 => med; 2 => big; 3 => big marked */
-  unsigned char page_type     ; 
-  unsigned char marked_on     ;
-  unsigned char has_new       ;
-  unsigned char mprotected    ;
-  unsigned char added         ;
-  unsigned short live_size;
+  void *mmu_src_block;
+  struct mpage *modified_next; /* next in chain of pages for backpointers, marks, etc. */
+  struct mpage *inc_modified_next; /* like modified_next, but for incrementally marked pages */
+  struct mpage *reprotect_next; /* next in a chain of pages that need to be re-protected */
 #ifdef MZ_GC_BACKTRACE
   void **backtrace;
   void *backtrace_page_src;
 #endif
-  void *mmu_src_block;
+#ifdef MZ_USE_PLACES
+  uintptr_t page_lock; /* for master GC pages during marking */
+#endif
+  /* The `size` field is overleaded for related meanings:
+       - big page => the size of the allocated object
+       - small page, nursery, gen-1/2 => offset for next allocate = allocated bytes + PREFIX_SIZE
+     For a medium page, the `obj_size` field is used instead. */
+  union {
+    uintptr_t size; /* size and/or allocation offset (see above) */
+    uintptr_t obj_size; /* size of each object on a medium page */
+  };
+  union {
+    uintptr_t alloc_size; /* for a nursery: total size of the nursery */
+    uintptr_t med_search_start; /* medium page: offset for searching for a free slot */
+    uintptr_t scan_boundary; /* small gen1 page: during GC, boundary between objects that can be
+                                should be treated as previously gen1 and objects that should be
+                                treated as just moved from gen0 */
+  };
+  unsigned short live_size; /* except for big pages, total size of live objects on the page */
+  unsigned char generation    :2;
+  unsigned char back_pointers :1;
+  unsigned char size_class    :2;
+  unsigned char page_type     :3; 
+  unsigned char marked_on     :1;
+  unsigned char inc_marked_on :1;
+  unsigned char marked_from   :1;
+  unsigned char has_new       :1;
+  unsigned char mprotected    :1;
+  unsigned char reprotect     :1; /* in reprotect_next chain already */
 } mpage;
 
 typedef struct Gen0 {
@@ -49,6 +60,12 @@ typedef struct Gen0 {
   uintptr_t max_size;
   uintptr_t page_alloc_size;
 } Gen0;
+
+typedef struct Gen_Half {
+  struct mpage *curr_alloc_page;
+  struct mpage *pages;
+  struct mpage *old_pages;
+} Gen_Half;
 
 typedef struct MsgMemory {
   struct mpage *pages;
@@ -67,6 +84,11 @@ typedef struct MarkSegment {
   struct MarkSegment *next;
   void **top;
 } MarkSegment;
+
+typedef struct Inc_Admin_Page {
+  struct Inc_Admin_Page *next;
+  size_t size, pos;
+} Inc_Admin_Page;
 
 typedef struct GC_Thread_Info {
   void *thread;
@@ -128,6 +150,7 @@ typedef mpage **PageMap;
 
 typedef struct NewGC {
   Gen0 gen0;
+  Gen_Half gen_half;
   Mark2_Proc  *mark_table;   /* the table of mark procs */
   Fixup2_Proc *fixup_table;  /* the table of repair procs */
   PageMap page_maps;
@@ -138,11 +161,24 @@ typedef struct NewGC {
   struct mpage *med_pages[MED_PAGE_TYPES][NUM_MED_PAGE_SIZES];
   struct mpage *med_freelist_pages[MED_PAGE_TYPES][NUM_MED_PAGE_SIZES];
 
-  MarkSegment *mark_stack;
+  intptr_t num_gen1_pages;
+
+  /* linked list of pages with back pointers to be traversed in a
+     minor collection, etc.: */
+  struct mpage *modified_next;
+  /* pages marked incrementally: */
+  struct mpage *inc_modified_next;
+  /* linked list of pages that need to be given write protection at
+     the end of the GC cycle: */
+  struct mpage *reprotect_next;
+
+  MarkSegment *mark_stack, *inc_mark_stack;
 
   /* Finalization */
   Fnl *run_queue;
   Fnl *last_in_queue;
+
+  int mark_depth;
 
   struct NewGC *primoridal_gc;
   uintptr_t max_heap_size;
@@ -163,11 +199,20 @@ typedef struct NewGC {
   int avoid_collection;
 
   unsigned char generations_available        :1;
+  unsigned char started_incremental          :1; /* must stick with incremental until major GC */
   unsigned char in_unsafe_allocation_mode    :1;
   unsigned char full_needed_for_finalization :1;
   unsigned char no_further_modifications     :1;
   unsigned char gc_full                      :1; /* a flag saying if this is a full/major collection */
+  unsigned char use_gen_half                 :1;
   unsigned char running_finalizers           :1;
+  unsigned char back_pointers                :1;
+  unsigned char need_fixup                   :1;
+  unsigned char check_gen1                   :1;
+  unsigned char mark_gen1                    :1;
+  unsigned char inc_gen1                     :1;
+  unsigned char during_backpointer           :1;
+  unsigned char incremental_requested        :1;
 
   /* blame the child */
   unsigned int doing_memory_accounting        :1;
@@ -181,18 +226,27 @@ typedef struct NewGC {
   OTEntry **owner_table;
   unsigned int owner_table_size;
   AccountHook *hooks;
+  int master_page_btc_mark_checked;
 
   uintptr_t number_of_gc_runs;
   unsigned int since_last_full;
   uintptr_t last_full_mem_use;
+  uintptr_t inc_mem_use_threshold;
+
+  uintptr_t prop_count;
+  uintptr_t inc_prop_count;
 
   /* These collect information about memory usage, for use in GC_dump. */
   uintptr_t peak_memory_use;
+  uintptr_t peak_pre_memory_use;
   uintptr_t num_minor_collects;
   uintptr_t num_major_collects;
+
+  uintptr_t minor_old_traversed;
+  uintptr_t minor_old_skipped;
+  uintptr_t modified_unprotects;
   
   /* THREAD_LOCAL variables that need to be saved off */
-  MarkSegment  *saved_mark_stack;
   void         *saved_GC_variable_stack;
   uintptr_t saved_GC_gen0_alloc_page_ptr;
   uintptr_t saved_GC_gen0_alloc_page_end;
@@ -203,7 +257,9 @@ typedef struct NewGC {
   int           dont_master_gc_until_child_registers;   /* :1: */
 #endif
 
- struct mpage *thread_local_pages;
+  Inc_Admin_Page *inc_space;
+  
+  struct mpage *thread_local_pages;
 
   /* Callbacks */
   void (*GC_collect_start_callback)(void);
@@ -214,9 +270,10 @@ typedef struct NewGC {
 
   GC_Immobile_Box *immobile_boxes;
 
-  /* Common with CompactGC */
   Fnl *finalizers;
   Fnl *splayed_finalizers;
+  Fnl *gen0_finalizers;
+  Fnl *splayed_gen0_finalizers;
   int num_fnls;
 
   void *park[2];
@@ -230,13 +287,24 @@ typedef struct NewGC {
   unsigned short phantom_tag;
 
   uintptr_t phantom_count;
+  uintptr_t gen0_phantom_count;
 
-  Roots roots;
-  GC_Weak_Array *weak_arrays;
-  GC_Weak_Box   *weak_boxes[2];
-  GC_Ephemeron  *ephemerons;
-  int num_last_seen_ephemerons;
+  Roots roots;  
   struct MMU     *mmu;
+
+  /* The `inc_` variants hold old-generation objects discovered in
+     incremental mode. If incremental mode is started, the plain
+     variants for a minor collection need to be added to the `inc_`
+     variants, since promoted objects from the nursery keep their mark
+     bits. The `bp_` variants are old-generation objects that were
+     marked as (potentially) containing backpointers; they are treated
+     like the normal ones, but not added to `inc_` because they're
+     either already marked or should be added when they're later
+     marked. */
+  GC_Weak_Array *weak_arrays, *inc_weak_arrays, *bp_weak_arrays;
+  GC_Weak_Box   *weak_boxes[2], *inc_weak_boxes[2], *bp_weak_boxes[2];
+  GC_Ephemeron  *ephemerons, *inc_ephemerons, *bp_ephemerons;
+  int num_last_seen_ephemerons;
 
   Allocator *saved_allocator;
 

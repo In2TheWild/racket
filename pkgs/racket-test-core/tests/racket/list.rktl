@@ -328,6 +328,18 @@
         (test `(,@fst ,@r2 ,@lst) add-between l x
               #:splice? #t #:before-first fst #:after-last lst #:before-last y)))))
 
+;; ---------- check-duplicates ----------
+
+(test #f check-duplicates '())
+(test 'a check-duplicates '(a a))
+(test 'a check-duplicates '(a b a))
+(test 'a check-duplicates '(a a b))
+(test '(a 3) check-duplicates '((a 1) (b 2) (a 3)) #:key car)
+(test 4 check-duplicates '(1 2 3 4 5 6) (lambda (x y) (equal? (modulo x 3) (modulo y 3))))
+(err/rt-test (check-duplicates 'a))
+(err/rt-test (check-duplicates '(1) #f))
+(err/rt-test (check-duplicates '(1) #:key #f))
+
 ;; ---------- remove-duplicates ----------
 (let ()
   (define rd remove-duplicates)
@@ -527,5 +539,93 @@
   (test '(20 22 24 26 28 30 32 34 36 38) range 20 40 2)
   (test '(20 19 18 17 16 15 14 13 12 11) range 20 10 -1)
   (test '(10 11.5 13.0 14.5) range 10 15 1.5))
+
+;; ---------- group-by ----------
+
+(test '((1) (4) (2 2) (56) (3)) group-by values '(1 4 2 56 2 3))
+(test '((1 1 1) (2 2 2 2 2) (54) (5) (43) (7) (643) (0))
+      group-by values '(1 2 1 2 54 2 5 43 7 2 643 1 2 0))
+(test '((1 3) (4 2 56 2))
+      group-by values '(1 4 2 56 2 3) (lambda (x y) (or (and (even? x) (even? y))
+                                                        (and (odd?  x) (odd?  y)))))
+(test '(((1 a)) ((4 b)) ((2 c) (2 e)) ((56 d)) ((3 f)))
+      group-by car '((1 a) (4 b) (2 c) (56 d) (2 e) (3 f)))
+(test '((1 3 5) (2 4 6)) group-by even? '(1 2 3 4 5 6))
+(err/rt-test (group-by #f))
+(err/rt-test (group-by '() #f))
+(err/rt-test (group-by '() values #f))
+
+;; ---------- cartesian-product ----------
+
+(test '((1 a) (1 b) (1 c)
+        (2 a) (2 b) (2 c)
+        (3 a) (3 b) (3 c))
+      cartesian-product '(1 2 3) '(a b c))
+(test '((4 d #t) (4 d #f) (4 e #t) (4 e #f) (4 f #t) (4 f #f)
+        (5 d #t) (5 d #f) (5 e #t) (5 e #f) (5 f #t) (5 f #f)
+        (6 d #t) (6 d #f) (6 e #t) (6 e #f) (6 f #t) (6 f #f))
+      cartesian-product '(4 5 6) '(d e f) '(#t #f))
+(err/rt-test (cartesian-product 3))
+
+;; ---------- list-update ----------
+
+(test '("zero" one two) list-update '(zero one two) 0 symbol->string)
+(test '(zero "one" two) list-update '(zero one two) 1 symbol->string)
+(err/rt-test (list-update '(zero one two) 3 symbol->string))
+(err/rt-test (list-update '(zero one two) -1 symbol->string))
+(err/rt-test (list-update '(zero one two) #f symbol->string))
+(err/rt-test (list-update #f 0 symbol->string))
+(err/rt-test (list-update '(zero one two) 0 #f))
+
+;; ---------- list-set ----------
+
+(test '(zero one "two") list-set '(zero one two) 2 "two")
+(err/rt-test (list-set '(zero one two) 3 "two"))
+(err/rt-test (list-set '(zero one two) -1 "two"))
+(err/rt-test (list-set '(zero one two) #f "two"))
+
+;; ---------- list prefix functions ----------
+
+(test #t list-prefix? '(1 2) '(1 2 3 4 5))
+(test #f list-prefix? '(2 1) '(1 2 3 4 5))
+(test #t list-prefix? '(1 2) '(1 2 3 4 5) =)
+(test #f list-prefix? '(2 1) '(1 2 3 4 5) =)
+(err/rt-test (list-prefix? #t '()))
+(err/rt-test (list-prefix? '() #t))
+(test '(a b) take-common-prefix '(a b c d) '(a b x y z))
+(test '() take-common-prefix '(1 a b c d) '(a b x y z))
+(test '(a b c d) take-common-prefix '(a b c d) '(a b c d))
+(test '(1 2) take-common-prefix '(1 2 3 4) '(1 2 4 3) =)
+(err/rt-test (take-common-prefix '() '() #f))
+(define (drop*-list xs ys [=? equal?])
+  (define-values (a b)
+    (drop-common-prefix xs ys =?))
+  (list a b))
+(test '((c d) (x y z)) drop*-list '(a b c d) '(a b x y z))
+(test '((1 a b c d) (a b x y z)) drop*-list '(1 a b c d) '(a b x y z))
+(test '(() ()) drop*-list '(a b c d) '(a b c d))
+(test '((3 4) (4 3)) drop*-list '(1 2 3 4) '(1 2 4 3) =)
+(err/rt-test (drop*-list '() '() #f))
+(define (split*-list xs ys [=? equal?])
+  (define-values (a b c)
+    (split-common-prefix xs ys =?))
+  (list a b c))
+(test '((a b) (c d) (x y z)) split*-list '(a b c d) '(a b x y z))
+(test '(() (1 a b c d) (a b x y z)) split*-list '(1 a b c d) '(a b x y z))
+(test '((a b c d) () ()) split*-list '(a b c d) '(a b c d))
+(test '((1 2) (3 4) (4 3)) split*-list '(1 2 3 4) '(1 2 4 3) =)
+(err/rt-test (split*-list '() '() #f))
+(err/rt-test (take-common-prefix 1 1))
+
+;; ---------- remf / remf* ----------
+
+(test '() remf positive? '())
+(test '(-2 3 4 -5) remf positive? '(1 -2 3 4 -5))
+(test '(1 3 4 -5) remf even? '(1 -2 3 4 -5))
+(test '(1 -2 3 4 -5) remf (λ (x) #f) '(1 -2 3 4 -5))
+(test '() remf* positive? '())
+(test '(-2 -5) remf* positive? '(1 -2 3 4 -5))
+(test '(1 3 -5) remf* even? '(1 -2 3 4 -5))
+(test '(1 -2 3 4 -5) remf* (λ (x) #f) '(1 -2 3 4 -5))
 
 (report-errs)

@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2004-2014 PLT Design Inc.
+  Copyright (c) 2004-2015 PLT Design Inc.
   Copyright (c) 1995-2001 Matthew Flatt
 
     This library is free software; you can redistribute it and/or
@@ -1147,6 +1147,9 @@ static void module_validate(Scheme_Object *data, Mz_CPort *port,
   if (m->phaseless && m->prefix->num_stxes)
     scheme_ill_formed_code(port);
 
+  if (m->max_let_depth < 0)
+    scheme_ill_formed_code(port);
+
   validate_toplevel(m->dummy, port, stack, tls, depth, delta, 
                     num_toplevels, num_stxes, num_lifts, tl_use_map,
                     tl_state, tl_timestamp,
@@ -1574,6 +1577,14 @@ static int validate_expr(Mz_CPort *port, Scheme_Object *expr,
 
       if (result) {
         r = is_functional_nonfailing_rator(app->rator, 1, expected_results, _st_ht);
+        if (!r
+            && SAME_OBJ(app->rator, scheme_make_vector_proc)
+            && (expected_results == 1 || expected_results == -1)
+            && (SCHEME_INTP(app->rand) 
+                && (SCHEME_INT_VAL(app->rand) >= 0)
+                && IN_FIXNUM_RANGE_ON_ALL_PLATFORMS(SCHEME_INT_VAL(app->rand)))) {
+          r = 1;
+        }
         result = validate_join(result, r);
       }
     }
@@ -1612,7 +1623,15 @@ static int validate_expr(Mz_CPort *port, Scheme_Object *expr,
 
       if (result) {
         r = is_functional_nonfailing_rator(app->rator, 2, expected_results, _st_ht);
-        result = validate_join(r, result);
+        if (!r
+            && SAME_OBJ(app->rator, scheme_make_vector_proc)
+            && (expected_results == 1 || expected_results == -1)
+            && (SCHEME_INTP(app->rand1)
+                && (SCHEME_INT_VAL(app->rand1) >= 0)
+                && IN_FIXNUM_RANGE_ON_ALL_PLATFORMS(SCHEME_INT_VAL(app->rand1)))) {
+          r = 1;
+        }
+         result = validate_join(r, result);
       }
     }
     break;
@@ -1782,16 +1801,16 @@ static int validate_expr(Mz_CPort *port, Scheme_Object *expr,
       for (i = 0; i < c; i++, p++) {
 	if ((q < 0) 
             || (p < 0)
-	    || (SCHEME_LET_AUTOBOX(lv) && ((p >= depth)
+	    || (SCHEME_LET_VALUE_AUTOBOX(lv) && ((p >= depth)
 					   || ((stack[p] != VALID_BOX)
                                                && (stack[p] != VALID_BOX_NOCLEAR))))
-	    || (!SCHEME_LET_AUTOBOX(lv) && ((p >= letlimit)
+	    || (!SCHEME_LET_VALUE_AUTOBOX(lv) && ((p >= letlimit)
 					    || !(WHEN_CAN_RESET_STACK_SLOT(stack[p] == VALID_VAL) 
                                                  || WHEN_CAN_RESET_STACK_SLOT(stack[p] == VALID_VAL_NOCLEAR) 
                                                  || (stack[p] == VALID_UNINIT)))))
 	  scheme_ill_formed_code(port);
 
-	if (!SCHEME_LET_AUTOBOX(lv)) {
+	if (!SCHEME_LET_VALUE_AUTOBOX(lv)) {
           if (stack[p] != VALID_VAL_NOCLEAR)
             stack[p] = VALID_VAL;
 	}
@@ -1811,7 +1830,7 @@ static int validate_expr(Mz_CPort *port, Scheme_Object *expr,
       if ((c < 0) || (c > delta))
 	scheme_ill_formed_code(port);
 
-      if (SCHEME_LET_AUTOBOX(lv)) {
+      if (SCHEME_LET_VOID_AUTOBOX(lv)) {
 	for (i = 0; i < c; i++) {
 	  stack[--delta] = VALID_BOX;
 	}
@@ -1978,6 +1997,36 @@ static int validate_expr(Mz_CPort *port, Scheme_Object *expr,
                           tl_state, tl_timestamp,
                           result_ignored, vc, tailpos, procs);
     result = validate_join(0, result);
+    break;
+  case scheme_with_immed_mark_type:
+    {
+      Scheme_With_Continuation_Mark *wcm = (Scheme_With_Continuation_Mark *)expr;
+      int r;
+
+      no_typed(need_local_type, port);
+      
+      r = validate_expr(port, wcm->key, stack, tls, depth, letlimit, delta, 
+                        num_toplevels, num_stxes, num_lifts, tl_use_map,
+                        tl_state, tl_timestamp,
+                        NULL, 0, 0, vc, 0, 0, procs,
+                        1, _st_ht);
+      result = validate_join_seq(r, result);
+      
+      r = validate_expr(port, wcm->val, stack, tls, depth, letlimit, delta, 
+                        num_toplevels, num_stxes, num_lifts, tl_use_map,
+                        tl_state, tl_timestamp,
+                        NULL, 0, 0, vc, 0, 0, procs,
+                        1, _st_ht);
+      result = validate_join_seq(r, result);
+
+      --delta;
+      if (delta < 0)
+	scheme_ill_formed_code(port);
+      stack[delta] = VALID_VAL;
+
+      expr = wcm->body;
+      goto top;
+    }
     break;
   case scheme_case_lambda_sequence_type:
     no_typed(need_local_type, port);

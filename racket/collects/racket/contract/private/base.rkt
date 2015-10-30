@@ -3,7 +3,8 @@
 (provide contract
          (rename-out [-recursive-contract recursive-contract])
          current-contract-region
-         invariant-assertion)
+         invariant-assertion
+         (for-syntax lifted-key add-lifted-property))
 
 (require (for-syntax racket/base syntax/name syntax/srcloc)
          racket/stxparam
@@ -17,6 +18,13 @@
          "generate.rkt"
          )
 
+(begin-for-syntax
+ (define lifted-key (gensym 'contract:lifted))
+ ;; syntax? -> syntax?
+ ;; tells clients that the expression is a lifted application
+ (define (add-lifted-property stx)
+   (syntax-property stx lifted-key #t)))
+
 (define-for-syntax lifted-ccrs (make-hasheq))
 
 (define-syntax-parameter current-contract-region
@@ -26,7 +34,8 @@
                 [id (hash-ref lifted-ccrs ctxt #f)])
            (with-syntax ([id (or id
                                  (let ([id (syntax-local-lift-expression 
-                                            (syntax/loc stx (quote-module-name)))])
+                                            (add-lifted-property
+                                             (syntax/loc stx (quote-module-name))))])
                                    (hash-set! lifted-ccrs ctxt (syntax-local-introduce id))
                                    id))])
              #'id))
@@ -51,7 +60,7 @@
 (define (apply-contract c v pos neg name loc)
   (let ([c (coerce-contract 'contract c)])
     (check-source-location! 'contract loc)
-    (define cvfp (contract-val-first-projection c))
+    (define clnp (contract-late-neg-projection c))
     (define blame
       (make-blame (build-source-location loc)
                   name
@@ -65,10 +74,10 @@
                   ;; instead of changing the library around.
                   (or pos "false")
                   
-                  (if cvfp #f neg)
+                  (if clnp #f neg)
                   #t))
     (cond
-      [cvfp (((cvfp blame) v) neg)]
+      [clnp ((clnp blame) v neg)]
       [else (((contract-projection c) blame) v)])))
 
 (define-syntax (invariant-assertion stx)
@@ -154,8 +163,6 @@
          ((f blame-known) val)))]))
   
 (define (recursive-contract-stronger this that) (equal? this that))
-
-(define trail (make-parameter #f))
 
 (define ((recursive-contract-first-order ctc) val)
   (contract-first-order-passes? (force-recursive-contract ctc)

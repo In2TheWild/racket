@@ -14,11 +14,13 @@
 
    ;; Step 1: Start a special server that waits for our signal to respond
    (initialize-catalogs)
+   (define okay-to-start?-sema (make-semaphore))
    (define okay-to-respond?-sema (make-semaphore))
    (thread
     (λ ()
       (serve/servlet (pkg-index/basic
                       (λ (pkg-name)
+                        (semaphore-post okay-to-start?-sema)
                         (semaphore-wait okay-to-respond?-sema)
                         (define r (hash-ref *index-ht-1* pkg-name #f))
                         r)
@@ -26,7 +28,7 @@
                      #:command-line? #t
                      #:servlet-regexp #rx""
                      #:port 9967)
-      (sleep 1)))
+      (sleep 2)))
 
    ;; Step 2: Assign it as our server
    $ "raco pkg config --set catalogs http://localhost:9967"
@@ -36,7 +38,7 @@
     (λ ()
       (shelly-begin
        $ "raco pkg install pkg-test1")))
-   (sleep 1)
+   (semaphore-wait okay-to-start?-sema)
 
    ;; Step 4: Start the installation request that will fail
    $ "raco pkg install pkg-test1" =exit> 1

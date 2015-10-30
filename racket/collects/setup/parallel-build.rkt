@@ -250,7 +250,7 @@
            (define-values (dir file b) (split-path hd))
            (set! filelist tail)
            (handler workerid 'start hd "" "" "")
-           (values hd (list (->bytes hd) (->bytes hd) null))]))
+           (values hd (list (->bytes hd) (->bytes (path->complete-path hd)) null))]))
 
       (define/public (has-jobs?) (not (null? filelist)))
       (define/public (jobs-cnt) (length filelist))
@@ -382,7 +382,7 @@
                prev]
               [(or (planet? p)
                    (and (submod? p) (planet? (cadr p))))
-               ;; skip `quote` module paths
+               ;; skip `planet` module paths
                prev]
               [else
                (when prev

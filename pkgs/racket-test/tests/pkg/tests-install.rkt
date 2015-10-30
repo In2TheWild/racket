@@ -70,6 +70,9 @@
       "fails due to unrecognized scheme"
       $ "raco pkg install magic://download" =exit> 1)
      (shelly-case
+      "fails due to 401 status result"
+      $ "raco pkg install broken" =exit> 1 =stderr> #rx"401")
+     (shelly-case
       "local directory name fails because not inferred as such (inferred as package name)"
       $ "raco pkg install test-pkgs" =exit> 1)
      (shelly-case
@@ -148,6 +151,12 @@
    (shelly-install "redundant packages ignored"
                    (~a tmp-dir"pkg-test1/ "tmp-dir"pkg-test1/")
                    $ "racket -e '(require pkg-test1)'")
+   
+   (shelly-install "already-installed error before no-such-file error"
+                   "test-pkgs/pkg-test1/"
+                   $ "raco pkg install no-such-dir/pkg-test1.zip"
+                   =exit> 1
+                   =stderr> #rx"already installed")
 
    (shelly-case
     "conflicting package names disallowed"
